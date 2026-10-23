@@ -146,7 +146,6 @@
 
     </LinearLayout>
 
-    <!-- Первый ряд символов: + - = * / % ( ) < > -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -286,7 +285,6 @@
 
     </LinearLayout>
 
-    <!-- Второй ряд символов: ! \@ # $ ~ \? { } [ ] -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -425,7 +423,6 @@
 
     </LinearLayout>
 
-    <!-- Третий ряд символов: x \ | : ; " ' , . ⌫ -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -564,7 +561,6 @@
 
     </LinearLayout>
 
-    <!-- Нижний ряд (Переключение на буквы, язык, Пробел, Ввод) -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
