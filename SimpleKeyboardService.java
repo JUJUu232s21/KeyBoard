@@ -17,16 +17,12 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.widget.TextView;
 import android.widget.Toast;
-
 import androidx.core.view.inputmethod.EditorInfoCompat;
 import androidx.core.view.inputmethod.InputConnectionCompat;
 import androidx.core.view.inputmethod.InputContentInfoCompat;
-
 import java.util.ArrayList;
 import java.util.List;
-
 public class SimpleKeyboardService extends InputMethodService {
-
     @SuppressLint("StaticFieldLeak")
     private static SimpleKeyboardService instance;
     private static String pendingSpokenText = null;
@@ -72,11 +68,6 @@ public class SimpleKeyboardService extends InputMethodService {
             deleteHandler.postDelayed(() -> {
                 InputConnection ic = getCurrentInputConnection();
                 EditorInfo info = getCurrentInputEditorInfo();
-                android.util.Log.d("SimpleKeyboardService", "=== COMMIT PENDING TEXT ===");
-                android.util.Log.d("SimpleKeyboardService", "Text to commit: " + textToCommit);
-                android.util.Log.d("SimpleKeyboardService", "InputConnection: " + ic);
-                android.util.Log.d("SimpleKeyboardService", "EditorInfo: " + (info != null ? "packageName=" + info.packageName + ", inputType=" + info.inputType : "null"));
-
                 if (ic != null) {
                     ic.beginBatchEdit();
                     ic.finishComposingText();
@@ -86,8 +77,6 @@ public class SimpleKeyboardService extends InputMethodService {
 
                     CharSequence textBefore = ic.getTextBeforeCursor(20, 0);
                     CharSequence textAfter = ic.getTextAfterCursor(20, 0);
-                    android.util.Log.d("SimpleKeyboardService", "Text before cursor: " + textBefore);
-                    android.util.Log.d("SimpleKeyboardService", "Text after cursor: " + textAfter);
                 } else {
                     pendingSpokenText = textToCommit;
                     android.util.Log.d("SimpleKeyboardService", "InputConnection is still NULL, re-saving to pendingSpokenText");
@@ -127,6 +116,7 @@ public class SimpleKeyboardService extends InputMethodService {
         setupKey(keyboardView, R.id.btn_8, "8");
         setupKey(keyboardView, R.id.btn_9, "9");
         setupKey(keyboardView, R.id.btn_0, "0");
+        setupKey(keyboardView, R.id.btn_slash_niz, "_");
 
         if (layoutResId == R.layout.keyboard_english) {
             setupLetterKey(keyboardView, R.id.btn_q, "q");
@@ -163,13 +153,26 @@ public class SimpleKeyboardService extends InputMethodService {
             setupLetterKey(keyboardView, R.id.btn_u, "у");
             setupLetterKey(keyboardView, R.id.btn_k, "к");
             setupLetterKey(keyboardView, R.id.btn_e, "е");
+            TextView btnE = keyboardView.findViewById(R.id.btn_e);
+            if (btnE != null) {
+                btnE.setOnLongClickListener(v -> {
+                    InputConnection ic = getCurrentInputConnection();
+                    if (ic != null) {
+                        String yo = isShift ? "Ё" : "ё";
+                        ic.commitText(yo, 1);
+                    }
+                    if (isShift && !isCapsLock) {
+                        setShift(false);
+                    }
+                    return true;
+                });
+            }
             setupLetterKey(keyboardView, R.id.btn_n, "н");
             setupLetterKey(keyboardView, R.id.btn_g, "г");
             setupLetterKey(keyboardView, R.id.btn_sh, "ш");
             setupLetterKey(keyboardView, R.id.btn_sch, "щ");
             setupLetterKey(keyboardView, R.id.btn_z, "з");
             setupLetterKey(keyboardView, R.id.btn_h, "х");
-            setupLetterKey(keyboardView, R.id.btn_hard, "ъ");
 
             setupLetterKey(keyboardView, R.id.btn_f, "ф");
             setupLetterKey(keyboardView, R.id.btn_y_soft, "ы");
@@ -182,7 +185,6 @@ public class SimpleKeyboardService extends InputMethodService {
             setupLetterKey(keyboardView, R.id.btn_d, "д");
             setupLetterKey(keyboardView, R.id.btn_zh, "ж");
             setupLetterKey(keyboardView, R.id.btn_ee, "э");
-            setupLetterKey(keyboardView, R.id.btn_yo, "ё");
 
             setupLetterKey(keyboardView, R.id.btn_ya, "я");
             setupLetterKey(keyboardView, R.id.btn_ch, "ч");
@@ -191,6 +193,20 @@ public class SimpleKeyboardService extends InputMethodService {
             setupLetterKey(keyboardView, R.id.btn_i, "и");
             setupLetterKey(keyboardView, R.id.btn_t, "т");
             setupLetterKey(keyboardView, R.id.btn_soft, "ь");
+            TextView btnSoft = keyboardView.findViewById(R.id.btn_soft);
+            if (btnSoft != null) {
+                btnSoft.setOnLongClickListener(v -> {
+                    InputConnection ic = getCurrentInputConnection();
+                    if (ic != null) {
+                        String hardSign = isShift ? "Ъ" : "ъ";
+                        ic.commitText(hardSign, 1);
+                    }
+                    if (isShift && !isCapsLock) {
+                        setShift(false);
+                    }
+                    return true;
+                });
+            }
             setupLetterKey(keyboardView, R.id.btn_b, "б");
             setupLetterKey(keyboardView, R.id.btn_yu, "ю");
         }
@@ -249,7 +265,7 @@ public class SimpleKeyboardService extends InputMethodService {
                 startActivity(intent);
             });
         }
-        
+
         View microClick = keyboardView.findViewById(R.id.microClick);
         if (microClick != null) {
             microClick.setOnClickListener(v -> {
@@ -263,6 +279,80 @@ public class SimpleKeyboardService extends InputMethodService {
         if (bufferObmen != null) {
             bufferObmen.setOnClickListener(v -> {
                 handleClipboardPaste();
+            });
+        }
+
+        View dragLeft = keyboardView.findViewById(R.id.dragLeft);
+        if (dragLeft != null) {
+            Handler leftHandler = new Handler(Looper.getMainLooper());
+            Runnable leftRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    InputConnection ic = getCurrentInputConnection();
+                    if (ic != null) {
+                        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT));
+                        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT));
+                    }
+                    leftHandler.postDelayed(this, 60);
+                }
+            };
+            dragLeft.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        v.setPressed(true);
+                        InputConnection ic = getCurrentInputConnection();
+                        if (ic != null) {
+                            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT));
+                            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_LEFT));
+                        }
+                        leftHandler.removeCallbacks(leftRunnable);
+                        leftHandler.postDelayed(leftRunnable, 300);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        v.performClick();
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setPressed(false);
+                        leftHandler.removeCallbacks(leftRunnable);
+                        return true;
+                }
+                return false;
+            });
+        }
+
+        View dragRight = keyboardView.findViewById(R.id.dragRight);
+        if (dragRight != null) {
+            Handler rightHandler = new Handler(Looper.getMainLooper());
+            Runnable rightRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    InputConnection ic = getCurrentInputConnection();
+                    if (ic != null) {
+                        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT));
+                        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT));
+                    }
+                    rightHandler.postDelayed(this, 60);
+                }
+            };
+            dragRight.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        v.setPressed(true);
+                        InputConnection ic = getCurrentInputConnection();
+                        if (ic != null) {
+                            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT));
+                            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT));
+                        }
+                        rightHandler.removeCallbacks(rightRunnable);
+                        rightHandler.postDelayed(rightRunnable, 300);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        v.performClick();
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setPressed(false);
+                        rightHandler.removeCallbacks(rightRunnable);
+                        return true;
+                }
+                return false;
             });
         }
 
@@ -371,10 +461,13 @@ public class SimpleKeyboardService extends InputMethodService {
         } else if (view instanceof TextView) {
             TextView tv = (TextView) view;
             int id = tv.getId();
+            String text = tv.getText() != null ? tv.getText().toString() : "";
             if (id != R.id.btn_sumbol && id != R.id.btn_language && id != R.id.btn_setting
                     && id != R.id.btn_delete && id != R.id.btn_top && id != R.id.btn_space
                     && id != R.id.btn_enter && id != R.id.btn_enter_search
                     && id != R.id.microClick && id != R.id.bufferObmen
+                    && id != R.id.dragLeft && id != R.id.dragRight
+                    && !getString(R.string.app_name).equals(text)
                     && !letterKeys.contains(tv)) {
                 if (!tv.hasOnClickListeners()) {
                     tv.setOnClickListener(v -> {
