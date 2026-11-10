@@ -6,26 +6,41 @@ import android.content.Context;
 import android.content.Intent;
 import android.inputmethodservice.InputMethodService;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.appcompat.app.AlertDialog;
+import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import androidx.core.view.inputmethod.EditorInfoCompat;
 import androidx.core.view.inputmethod.InputConnectionCompat;
 import androidx.core.view.inputmethod.InputContentInfoCompat;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 public class SimpleKeyboardService extends InputMethodService {
     @SuppressLint("StaticFieldLeak")
     private static SimpleKeyboardService instance;
     private static String pendingSpokenText = null;
+    private static final List<MyAdapter.ListItem> clipboardHistory = new ArrayList<>();
+    private ClipboardManager.OnPrimaryClipChangedListener clipListener;
 
     private final List<TextView> letterKeys = new ArrayList<>();
     private boolean isShift = false;
@@ -44,12 +59,143 @@ public class SimpleKeyboardService extends InputMethodService {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipListener = this::updateClipboardHistoryFromSystem;
+            clipboard.addPrimaryClipChangedListener(clipListener);
+            updateClipboardHistoryFromSystem();
+        }
     }
 
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        if (clipListener != null) {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.removePrimaryClipChangedListener(clipListener);
+            }
+        }
         super.onDestroy();
+    }
+
+    private static final Set<String> deletedClipContents = new HashSet<>();
+    private static long lastImageAddTime = 0;
+
+    private static void addToClipboardHistory(MyAdapter.ListItem newItem) {
+        if (newItem == null || newItem.getContent() == null) return;
+
+        if (newItem.getType() == MyAdapter.ListItem.TYPE_IMAGE) {
+            long now = System.currentTimeMillis();
+            if (now - lastImageAddTime < 1500) {
+                return;
+            }
+            lastImageAddTime = now;
+        }
+
+        deletedClipContents.remove(newItem.getContent());
+        if (!clipboardHistory.isEmpty() && newItem.getContent().equals(clipboardHistory.get(0).getContent())) {
+            return;
+        }
+        for (int i = 0; i < clipboardHistory.size(); i++) {
+            if (newItem.getContent().equals(clipboardHistory.get(i).getContent())) {
+                clipboardHistory.remove(i);
+                break;
+            }
+        }
+        clipboardHistory.add(0, newItem);
+        if (clipboardHistory.size() > 50) {
+            clipboardHistory.remove(clipboardHistory.size() - 1);
+        }
+    }
+
+    private void updateClipboardHistoryFromSystem() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null && clipboard.hasPrimaryClip()) {
+            ClipData clipData = clipboard.getPrimaryClip();
+            if (clipData != null && clipData.getItemCount() > 0) {
+                ClipDescription description = clipData.getDescription();
+                ClipData.Item item = clipData.getItemAt(0);
+
+                Uri uri = item.getUri();
+                boolean isImage = false;
+                if (uri != null && description != null) {
+                    for (int i = 0; i < description.getMimeTypeCount(); i++) {
+                        String mimeType = description.getMimeType(i);
+                        if (mimeType != null && mimeType.startsWith("image/")) {
+                            isImage = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (isImage && uri != null) {
+                    String localPath = saveImageToLocalCache(this, uri);
+                    if (localPath != null) {
+                        addToClipboardHistory(new MyAdapter.ListItem(MyAdapter.ListItem.TYPE_IMAGE, localPath));
+                    }
+                } else {
+                    CharSequence text = item.getText();
+                    if (text != null && text.length() > 0) {
+                        addToClipboardHistory(new MyAdapter.ListItem(MyAdapter.ListItem.TYPE_TEXT, text.toString()));
+                    } else if (uri != null) {
+                        addToClipboardHistory(new MyAdapter.ListItem(MyAdapter.ListItem.TYPE_TEXT, uri.toString()));
+                    }
+                }
+            }
+        }
+    }
+
+    private String saveImageToLocalCache(Context context, Uri uri) {
+        try {
+            InputStream inputStream = context.getContentResolver().openInputStream(uri);
+            if (inputStream == null) return null;
+
+            File cacheDir = new File(context.getFilesDir(), "clipboard_images");
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs();
+            }
+
+            File localFile = new File(cacheDir, "clip_" + System.currentTimeMillis() + ".png");
+            OutputStream outputStream = new FileOutputStream(localFile);
+
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, read);
+            }
+            outputStream.flush();
+            outputStream.close();
+            inputStream.close();
+
+            if (isDuplicateImage(localFile)) {
+                localFile.delete();
+                return null;
+            }
+
+            return localFile.getAbsolutePath();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private static boolean isDuplicateImage(File newFile) {
+        if (clipboardHistory.isEmpty()) return false;
+        long newSize = newFile.length();
+        int checkCount = Math.min(5, clipboardHistory.size());
+        for (int i = 0; i < checkCount; i++) {
+            MyAdapter.ListItem item = clipboardHistory.get(i);
+            if (item.getType() == MyAdapter.ListItem.TYPE_IMAGE) {
+                try {
+                    File existingFile = new File(item.getContent());
+                    if (existingFile.exists() && existingFile.length() == newSize) {
+                        return true;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return false;
     }
 
     public static void deliverSpokenText(String text) {
@@ -68,6 +214,7 @@ public class SimpleKeyboardService extends InputMethodService {
             deleteHandler.postDelayed(() -> {
                 InputConnection ic = getCurrentInputConnection();
                 EditorInfo info = getCurrentInputEditorInfo();
+
                 if (ic != null) {
                     ic.beginBatchEdit();
                     ic.finishComposingText();
@@ -79,7 +226,6 @@ public class SimpleKeyboardService extends InputMethodService {
                     CharSequence textAfter = ic.getTextAfterCursor(20, 0);
                 } else {
                     pendingSpokenText = textToCommit;
-                    android.util.Log.d("SimpleKeyboardService", "InputConnection is still NULL, re-saving to pendingSpokenText");
                 }
             }, 150);
         }
@@ -280,6 +426,10 @@ public class SimpleKeyboardService extends InputMethodService {
             bufferObmen.setOnClickListener(v -> {
                 handleClipboardPaste();
             });
+            bufferObmen.setOnLongClickListener(v -> {
+                handleClipboardLongClick();
+                return true;
+            });
         }
 
         View dragLeft = keyboardView.findViewById(R.id.dragLeft);
@@ -373,10 +523,7 @@ public class SimpleKeyboardService extends InputMethodService {
             deleteRunnable = new Runnable() {
                 @Override
                 public void run() {
-                    InputConnection ic = getCurrentInputConnection();
-                    if (ic != null) {
-                        ic.deleteSurroundingText(1, 0);
-                    }
+                    handleDelete();
                     deleteHandler.postDelayed(this, 100);
                 }
             };
@@ -385,10 +532,7 @@ public class SimpleKeyboardService extends InputMethodService {
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         v.setPressed(true);
-                        InputConnection ic = getCurrentInputConnection();
-                        if (ic != null) {
-                            ic.deleteSurroundingText(1, 0);
-                        }
+                        handleDelete();
                         deleteHandler.removeCallbacks(deleteRunnable);
                         deleteHandler.postDelayed(deleteRunnable, 400);
                         return true;
@@ -518,6 +662,18 @@ public class SimpleKeyboardService extends InputMethodService {
         }
     }
 
+    private void handleDelete() {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            CharSequence selectedText = ic.getSelectedText(0);
+            if (selectedText != null && selectedText.length() > 0) {
+                ic.commitText("", 1);
+            } else {
+                ic.deleteSurroundingText(1, 0);
+            }
+        }
+    }
+
     private void setShift(boolean active) {
         isShift = active;
         for (TextView tv : letterKeys) {
@@ -576,16 +732,10 @@ public class SimpleKeyboardService extends InputMethodService {
                 if (mimeType == null || !mimeType.startsWith("image/")) {
                     mimeType = "image/png";
                 }
-                InputContentInfoCompat inputContentInfo = new InputContentInfoCompat(
-                        uri,
-                        new ClipDescription("Screenshot", new String[]{mimeType}),
-                        null
-                );
+                InputContentInfoCompat inputContentInfo = new InputContentInfoCompat( uri,new ClipDescription("Screenshot", new String[]{mimeType}), null );
                 InputConnection ic = getCurrentInputConnection();
                 int flags = InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION;
-                boolean success = InputConnectionCompat.commitContent(
-                        ic, editorInfo, inputContentInfo, flags, null
-                );
+                boolean success = InputConnectionCompat.commitContent(ic, editorInfo, inputContentInfo, flags, null);
                 if (!success) {
                     Toast.makeText(this, "Не удалось отправить картинку в приложение", Toast.LENGTH_SHORT).show();
                 }
@@ -608,5 +758,137 @@ public class SimpleKeyboardService extends InputMethodService {
                 Toast.makeText(this, "В буфере нет текста или картинки", Toast.LENGTH_SHORT).show();
             }
         }
+    }
+
+    private void commitImageFromUri(Uri uri) {
+        if (uri == null) return;
+
+        Uri contentUri = uri;
+        String scheme = uri.getScheme();
+        if (scheme == null || scheme.equals("file") || !uri.toString().startsWith("content://")) {
+            try {
+                File file = new File(uri.getPath() != null ? uri.getPath() : uri.toString());
+                if (file.exists()) {
+                    contentUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
+        EditorInfo editorInfo = getCurrentInputEditorInfo();
+        String[] mimeTypes = EditorInfoCompat.getContentMimeTypes(editorInfo);
+        boolean supported = false;
+        if (mimeTypes != null) {
+            for (String mimeType : mimeTypes) {
+                if (ClipDescription.compareMimeTypes(mimeType, "image/*")) {
+                    supported = true;
+                    break;
+                }
+            }
+        }
+
+        if (supported) {
+            InputContentInfoCompat inputContentInfo = new InputContentInfoCompat(contentUri, new ClipDescription("Image", new String[]{"image/png", "image/jpeg"}), null );
+            InputConnection ic = getCurrentInputConnection();
+            int flags = InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION;
+            boolean success = InputConnectionCompat.commitContent(ic, editorInfo, inputContentInfo, flags, null);
+            if (!success) {
+                Toast.makeText(this, "Не удалось отправить картинку", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            Toast.makeText(this, "Приложение не поддерживает картинки", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private int deleteItemPosition = -1;
+
+    private void handleClipboardLongClick() {
+        updateClipboardHistoryFromSystem();
+        if (clipboardHistory.isEmpty()) {
+            Toast.makeText(this, "История буфера обмена пуста", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        View overlayView = getLayoutInflater().inflate(R.layout.clipboard_overlay, null);
+        int fixedHeightPx = (int) (320 * getResources().getDisplayMetrics().density);
+        overlayView.setMinimumHeight(fixedHeightPx);
+        ListView listView = overlayView.findViewById(R.id.clipboard_list);
+        MyAdapter adapter = new MyAdapter(this, clipboardHistory);
+        listView.setAdapter(adapter);
+
+        View confirmContainer = overlayView.findViewById(R.id.confirm_delete_container);
+        View btnConfirmDelete = overlayView.findViewById(R.id.btn_confirm_delete);
+        View btnCancelDelete = overlayView.findViewById(R.id.btn_cancel_delete);
+
+        if (btnConfirmDelete != null && btnCancelDelete != null && confirmContainer != null) {
+            btnConfirmDelete.setOnClickListener(v -> {
+                if (deleteItemPosition >= 0 && deleteItemPosition < clipboardHistory.size()) {
+                    MyAdapter.ListItem removed = clipboardHistory.remove(deleteItemPosition);
+                    if (removed != null && removed.getContent() != null) {
+                        deletedClipContents.add(removed.getContent());
+                    }
+                    adapter.notifyDataSetChanged();
+
+                    if (deleteItemPosition == 0) {
+                        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (clipboard != null) {
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                    clipboard.clearPrimaryClip();
+                                } else {
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("", ""));
+                                }
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+
+                    deleteItemPosition = -1;
+                    confirmContainer.setVisibility(View.GONE);
+                    if (clipboardHistory.isEmpty()) {
+                        setInputView(createKeyboardView(currentLayoutResId));
+                    }
+                }
+            });
+
+            btnCancelDelete.setOnClickListener(v -> {
+                deleteItemPosition = -1;
+                confirmContainer.setVisibility(View.GONE);
+            });
+        }
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            if (confirmContainer != null && confirmContainer.getVisibility() == View.VISIBLE) {
+                confirmContainer.setVisibility(View.GONE);
+                return;
+            }
+            MyAdapter.ListItem item = clipboardHistory.get(position);
+            if (item.getType() == MyAdapter.ListItem.TYPE_TEXT) {
+                InputConnection ic = getCurrentInputConnection();
+                if (ic != null) {
+                    ic.commitText(item.getContent(), 1);
+                }
+            } else if (item.getType() == MyAdapter.ListItem.TYPE_IMAGE) {
+                commitImageFromUri(Uri.parse(item.getContent()));
+            }
+            setInputView(createKeyboardView(currentLayoutResId));
+        });
+
+        listView.setOnItemLongClickListener((parent, view, position, id) -> {
+            deleteItemPosition = position;
+            if (confirmContainer != null) {
+                confirmContainer.setVisibility(View.VISIBLE);
+            }
+            return true;
+        });
+
+        View btnClose = overlayView.findViewById(R.id.btn_close_clipboard);
+        if (btnClose != null) {
+            btnClose.setOnClickListener(v -> setInputView(createKeyboardView(currentLayoutResId)));
+        }
+
+        setInputView(overlayView);
     }
 }
